@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bido — Real-time Intent Auctions</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            arc: { gold: '#F5A623', light: '#FCD34D' },
+            bido: { purple: '#8B5CF6', blue: '#3B82F6', green: '#10B981' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; background: #09090b; }
+    .gradient-text {
+      background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 50%, #06B6D4 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .gradient-border {
+      background: linear-gradient(135deg, rgba(139,92,246,0.15), rgba(59,130,246,0.15));
+      border: 1px solid rgba(139,92,246,0.25);
+    }
+    .gold-glow { box-shadow: 0 0 30px rgba(245,166,35,0.15); }
+    .pulse-new { animation: pulseNew 2s ease-in-out; }
+    @keyframes pulseNew {
+      0% { background-color: rgba(139,92,246,0.2); }
+      100% { background-color: transparent; }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in { animation: fadeInUp 0.6s ease-out forwards; }
+    .animate-fade-in-delay-1 { animation: fadeInUp 0.6s ease-out 0.1s forwards; opacity: 0; }
+    .animate-fade-in-delay-2 { animation: fadeInUp 0.6s ease-out 0.2s forwards; opacity: 0; }
+    .animate-fade-in-delay-3 { animation: fadeInUp 0.6s ease-out 0.3s forwards; opacity: 0; }
+    .animate-fade-in-delay-4 { animation: fadeInUp 0.6s ease-out 0.4s forwards; opacity: 0; }
+    @keyframes countUp { from { opacity: 0.5; } to { opacity: 1; } }
+    .hero-gradient {
+      background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(139,92,246,0.15), transparent),
+                  radial-gradient(ellipse 60% 40% at 80% 50%, rgba(59,130,246,0.08), transparent);
+    }
+    .card-hover { transition: all 0.3s ease; }
+    .card-hover:hover { transform: translateY(-2px); border-color: rgba(139,92,246,0.4); }
+    .demo-step { transition: all 0.5s ease; }
+    .demo-step.active { color: #8B5CF6; }
+    .demo-step.done { color: #10B981; }
+    .spinner { border: 2px solid rgba(139,92,246,0.2); border-top-color: #8B5CF6; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.8s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #18181b; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+  </style>
+</head>
+<body class="text-zinc-100 min-h-screen">
+
+  <!-- ========== HERO ========== -->
+  <section class="hero-gradient relative overflow-hidden">
+    <div class="max-w-6xl mx-auto px-6 pt-16 pb-20 text-center">
+      <div class="animate-fade-in">
+        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-zinc-800/80 border border-zinc-700/50 text-sm text-zinc-400 mb-8">
+          <span class="w-2 h-2 rounded-full bg-bido-green animate-pulse"></span>
+          Live on Arc Testnet
+        </div>
+        <h1 class="text-5xl md:text-7xl font-black tracking-tight mb-6">
+          <span class="gradient-text">Real-time intent auctions</span><br/>
+          <span class="text-zinc-100">for the agent economy</span>
+        </h1>
+        <p class="text-xl md:text-2xl text-zinc-400 max-w-3xl mx-auto mb-10 leading-relaxed">
+          Sponsors compete in <span class="text-white font-semibold">&lt;1s auctions</span> to pay APIs on behalf of AI agents
+        </p>
+        <div class="flex flex-wrap justify-center gap-4">
+          <a href="#demo" class="px-8 py-3.5 rounded-xl bg-gradient-to-r from-bido-purple to-bido-blue text-white font-semibold hover:opacity-90 transition-opacity">
+            Try Live Demo
+          </a>
+          <a href="#stats" class="px-8 py-3.5 rounded-xl border border-zinc-700 text-zinc-300 font-medium hover:border-zinc-500 transition-colors">
+            View Stats
+          </a>
+        </div>
+      </div>
+    </div>
+    <!-- Decorative grid -->
+    <div class="absolute inset-0 -z-10 opacity-[0.03]" style="background-image: url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2240%22><rect width=%2240%22 height=%2240%22 fill=%22none%22 stroke=%22white%22 stroke-width=%220.5%22/></svg>');"></div>
+  </section>
+
+  <!-- ========== LIVE STATS ========== -->
+  <section id="stats" class="max-w-6xl mx-auto px-6 -mt-8">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <!-- Card 1: Total Auctions -->
+      <div class="gradient-border rounded-2xl p-6 card-hover animate-fade-in-delay-1">
+        <div class="flex items-center gap-2 text-zinc-400 text-sm font-medium mb-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Total Auctions
+        </div>
+        <div class="text-4xl font-bold text-white" id="stat-auctions">—</div>
+        <div class="text-xs text-zinc-500 mt-1">completed on-chain</div>
+      </div>
+      <!-- Card 2: Total Volume -->
+      <div class="gradient-border rounded-2xl p-6 card-hover animate-fade-in-delay-2">
+        <div class="flex items-center gap-2 text-zinc-400 text-sm font-medium mb-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/></svg>
+          Total Volume
+        </div>
+        <div class="text-4xl font-bold text-white" id="stat-volume">—</div>
+        <div class="text-xs text-zinc-500 mt-1">USDC processed</div>
+      </div>
+      <!-- Card 3: Platform Revenue -->
+      <div class="gradient-border rounded-2xl p-6 card-hover animate-fade-in-delay-3">
+        <div class="flex items-center gap-2 text-zinc-400 text-sm font-medium mb-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          Platform Revenue
+        </div>
+        <div class="text-4xl font-bold text-bido-green" id="stat-revenue">—</div>
+        <div class="text-xs text-zinc-500 mt-1">5% take rate</div>
+      </div>
+      <!-- Card 4: Avg Auction Time -->
+      <div class="gradient-border rounded-2xl p-6 card-hover animate-fade-in-delay-4">
+        <div class="flex items-center gap-2 text-zinc-400 text-sm font-medium mb-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Avg Auction Time
+        </div>
+        <div class="text-4xl font-bold text-arc-gold" id="stat-time">~3s</div>
+        <div class="text-xs text-zinc-500 mt-1">4 txs on Arc</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== LIVE AUCTION FEED ========== -->
+  <section class="max-w-6xl mx-auto px-6 mt-16">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-2xl font-bold">Live Auction Feed</h2>
+      <div class="flex items-center gap-2 text-sm text-zinc-500">
+        <span class="w-2 h-2 rounded-full bg-bido-green animate-pulse"></span>
+        Updates every 5s
+      </div>
+    </div>
+    <div class="gradient-border rounded-2xl overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-zinc-800/50">
+              <th class="text-left text-zinc-500 font-medium px-5 py-3.5">#</th>
+              <th class="text-left text-zinc-500 font-medium px-5 py-3.5">Query</th>
+              <th class="text-left text-zinc-500 font-medium px-5 py-3.5">Winner</th>
+              <th class="text-right text-zinc-500 font-medium px-5 py-3.5">Winning Bid</th>
+              <th class="text-right text-zinc-500 font-medium px-5 py-3.5">Time</th>
+              <th class="text-right text-zinc-500 font-medium px-5 py-3.5">Tx</th>
+            </tr>
+          </thead>
+          <tbody id="auction-feed">
+            <tr><td colspan="6" class="px-5 py-12 text-center text-zinc-600">Loading auctions from Arc Testnet...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SPONSOR LEADERBOARD ========== -->
+  <section class="max-w-6xl mx-auto px-6 mt-16">
+    <h2 class="text-2xl font-bold mb-6">Sponsor Leaderboard</h2>
+    <div class="grid md:grid-cols-2 gap-4" id="leaderboard">
+      <!-- Populated by JS -->
+    </div>
+  </section>
+
+  <!-- ========== TRIGGER LIVE DEMO ========== -->
+  <section id="demo" class="max-w-6xl mx-auto px-6 mt-20 mb-16">
+    <div class="gradient-border rounded-2xl p-8 md:p-12 text-center gold-glow relative overflow-hidden">
+      <div class="absolute inset-0 bg-gradient-to-br from-bido-purple/5 to-arc-gold/5"></div>
+      <div class="relative">
+        <h2 class="text-3xl md:text-4xl font-bold mb-3">See It Live</h2>
+        <p class="text-zinc-400 mb-8 max-w-xl mx-auto">
+          An AI agent asks for flight data. Sponsors bid in a real-time on-chain auction. The winner pays the API. Data is delivered. All in under 3 seconds.
+        </p>
+
+        <button id="demo-btn"
+          onclick="triggerDemo()"
+          class="px-10 py-4 rounded-xl bg-gradient-to-r from-arc-gold to-yellow-500 text-black font-bold text-lg hover:opacity-90 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+          Trigger Live Auction
+        </button>
+
+        <!-- Demo progress -->
+        <div id="demo-progress" class="hidden mt-10 text-left max-w-lg mx-auto space-y-4">
+          <div id="step-1" class="demo-step flex items-center gap-3 text-zinc-500">
+            <span class="step-icon w-6 h-6 rounded-full border border-zinc-700 flex items-center justify-center text-xs">1</span>
+            <span>Opening auction on Arc...</span>
+          </div>
+          <div id="step-2" class="demo-step flex items-center gap-3 text-zinc-500">
+            <span class="step-icon w-6 h-6 rounded-full border border-zinc-700 flex items-center justify-center text-xs">2</span>
+            <span>Sponsors bidding...</span>
+          </div>
+          <div id="step-3" class="demo-step flex items-center gap-3 text-zinc-500">
+            <span class="step-icon w-6 h-6 rounded-full border border-zinc-700 flex items-center justify-center text-xs">3</span>
+            <span>Closing auction — winner pays...</span>
+          </div>
+          <div id="step-4" class="demo-step flex items-center gap-3 text-zinc-500">
+            <span class="step-icon w-6 h-6 rounded-full border border-zinc-700 flex items-center justify-center text-xs">4</span>
+            <span>Flight data delivered!</span>
+          </div>
+        </div>
+
+        <!-- Demo result -->
+        <div id="demo-result" class="hidden mt-8 gradient-border rounded-xl p-6 text-left max-w-lg mx-auto">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="text-bido-green text-xl">&#10003;</span>
+            <span class="font-semibold text-lg" id="demo-winner-text">—</span>
+          </div>
+          <div class="space-y-2 text-sm" id="demo-tx-links"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== WHY ARC ========== -->
+  <section class="max-w-6xl mx-auto px-6 mb-20">
+    <h2 class="text-2xl font-bold mb-2">Why This Works on Arc</h2>
+    <p class="text-zinc-400 mb-8">Each Bido auction = 4 on-chain transactions. Gas cost makes or breaks the model.</p>
+    <div class="grid md:grid-cols-2 gap-6">
+      <!-- Ethereum -->
+      <div class="rounded-2xl border border-red-500/20 bg-red-500/5 p-8">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+            <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </div>
+          <span class="font-bold text-lg text-red-400">Ethereum Mainnet</span>
+        </div>
+        <div class="text-5xl font-black text-red-400 mb-2">$5-20+</div>
+        <div class="text-zinc-400 mb-4">gas per auction (4 txs)</div>
+        <div class="text-sm text-zinc-500 space-y-1">
+          <div>openAuction: ~$2-5</div>
+          <div>placeBid x2: ~$2-8</div>
+          <div>closeAuction: ~$2-5</div>
+        </div>
+        <div class="mt-6 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-medium text-center">
+          Gas &gt; revenue = IMPOSSIBLE
+        </div>
+      </div>
+      <!-- Arc -->
+      <div class="rounded-2xl border border-bido-green/30 bg-bido-green/5 p-8 gold-glow">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-full bg-arc-gold/20 flex items-center justify-center">
+            <svg class="w-5 h-5 text-arc-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <span class="font-bold text-lg text-arc-gold">Arc Testnet</span>
+        </div>
+        <div class="text-5xl font-black text-bido-green mb-2">$0.001</div>
+        <div class="text-zinc-400 mb-4">gas per auction (4 txs)</div>
+        <div class="text-sm text-zinc-500 space-y-1">
+          <div>openAuction: ~$0.0003</div>
+          <div>placeBid x2: ~$0.0004</div>
+          <div>closeAuction: ~$0.0003</div>
+        </div>
+        <div class="mt-6 px-4 py-2 rounded-lg bg-bido-green/10 border border-bido-green/20 text-bido-green text-sm font-medium text-center">
+          5% take rate = pure profit
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== FOOTER ========== -->
+  <footer class="border-t border-zinc-800/50 py-8 text-center text-sm text-zinc-600">
+    <p>Bido Protocol &mdash; Built for <a href="https://testnet.arcscan.app/address/0xe33dEE9cF95698EF686F23aEa9EDcadEABcfA00C" target="_blank" class="text-bido-purple hover:underline">Arc Testnet</a></p>
+  </footer>
+
+<!-- ========== JAVASCRIPT ========== -->
+<script>
+// ===== CONFIG =====
+const RPC_URL = 'https://rpc.testnet.arc.network';
+const BIDO_ADDRESS = '0xe33dEE9cF95698EF686F23aEa9EDcadEABcfA00C';
+const EXPLORER = 'https://testnet.arcscan.app';
+const API_URL = 'http://localhost:3000';
+
+const SPONSOR_A = '0x995137FFdff7439EC0f2b418F6461e8bf0Af856C'.toLowerCase();
+const SPONSOR_B = '0x6D3215EE6828803F0Ce102Adc9352e48e6100f68'.toLowerCase();
+
+const SPONSOR_NAMES = {
+  [SPONSOR_A]: 'Delta Airlines',
+  [SPONSOR_B]: 'United Airlines',
+};
+const SPONSOR_COLORS = {
+  [SPONSOR_A]: 'text-blue-400',
+  [SPONSOR_B]: 'text-purple-400',
+};
+const SPONSOR_ICONS = {
+  [SPONSOR_A]: `<svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`,
+  [SPONSOR_B]: `<svg class="w-5 h-5 text-purple-400" fill="currentColor" viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`,
+};
+
+const BIDO_ABI = [
+  'function auctionCounter() external view returns (uint256)',
+  'function getAuction(uint256 id) external view returns (tuple(uint256 id, string query, address highestBidder, uint256 highestBid, bool closed, uint256 createdAt))',
+  'event AuctionOpened(uint256 indexed auctionId, string query, uint256 timestamp)',
+  'event AuctionClosed(uint256 indexed auctionId, address indexed winner, uint256 winningBid, uint256 apiPayment, uint256 platformFee)',
+];
+
+// ===== PROVIDER =====
+let provider, contract;
+let auctionsCache = [];
+let lastKnownCount = 0;
+
+function initProvider() {
+  provider = new ethers.JsonRpcProvider(RPC_URL);
+  contract = new ethers.Contract(BIDO_ADDRESS, BIDO_ABI, provider);
+}
+
+// ===== HELPERS =====
+function truncAddr(addr) {
+  return addr.slice(0, 6) + '...' + addr.slice(-4);
+}
+
+function formatUSDC(val) {
+  return parseFloat(ethers.formatUnits(val, 6)).toFixed(2);
+}
+
+function sponsorName(addr) {
+  return SPONSOR_NAMES[addr.toLowerCase()] || truncAddr(addr);
+}
+
+function sponsorColor(addr) {
+  return SPONSOR_COLORS[addr.toLowerCase()] || 'text-zinc-300';
+}
+
+function timeAgo(ts) {
+  const diff = Math.floor(Date.now() / 1000) - Number(ts);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function animateNumber(el, target, prefix = '', suffix = '') {
+  const start = parseFloat(el.textContent.replace(/[^0-9.]/g, '')) || 0;
+  const duration = 800;
+  const startTime = performance.now();
+
+  function update(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const current = start + (target - start) * eased;
+    el.textContent = prefix + (Number.isInteger(target) ? Math.round(current) : current.toFixed(2)) + suffix;
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+}
+
+// ===== DATA FETCHING =====
+async function fetchAllAuctions() {
+  try {
+    const count = Number(await contract.auctionCounter());
+    if (count === lastKnownCount && auctionsCache.length > 0) return auctionsCache;
+    lastKnownCount = count;
+
+    const start = Math.max(0, count - 20);
+    const promises = [];
+    for (let i = start; i < count; i++) {
+      promises.push(contract.getAuction(i));
+    }
+    const results = await Promise.all(promises);
+
+    auctionsCache = results
+      .filter(a => a.closed)
+      .map(a => ({
+        id: Number(a.id),
+        query: a.query,
+        winner: a.highestBidder,
+        winningBid: a.highestBid,
+        createdAt: Number(a.createdAt),
+      }))
+      .sort((a, b) => b.id - a.id);
+
+    return auctionsCache;
+  } catch (err) {
+    console.error('Fetch error:', err);
+    return auctionsCache;
+  }
+}
+
+// ===== RENDER STATS =====
+function renderStats(auctions) {
+  const totalAuctions = auctions.length;
+  let totalVolume = 0n;
+  for (const a of auctions) totalVolume += a.winningBid;
+
+  const volumeUSD = parseFloat(ethers.formatUnits(totalVolume, 6));
+  const revenueUSD = volumeUSD * 0.05;
+
+  animateNumber(document.getElementById('stat-auctions'), totalAuctions);
+  animateNumber(document.getElementById('stat-volume'), volumeUSD, '$');
+  animateNumber(document.getElementById('stat-revenue'), revenueUSD, '$');
+}
+
+// ===== RENDER FEED =====
+let prevTopId = -1;
+
+function renderFeed(auctions) {
+  const feed = document.getElementById('auction-feed');
+  const top10 = auctions.slice(0, 10);
+
+  if (top10.length === 0) {
+    feed.innerHTML = '<tr><td colspan="6" class="px-5 py-12 text-center text-zinc-600">No closed auctions yet. Run bido-runner.js or trigger a demo!</td></tr>';
+    return;
+  }
+
+  const newTopId = top10[0]?.id ?? -1;
+  const isNew = newTopId !== prevTopId && prevTopId !== -1;
+  prevTopId = newTopId;
+
+  feed.innerHTML = top10.map((a, i) => `
+    <tr class="border-b border-zinc-800/30 hover:bg-zinc-800/20 transition-colors ${i === 0 && isNew ? 'pulse-new' : ''}">
+      <td class="px-5 py-3.5 text-zinc-500 font-mono text-xs">#${a.id}</td>
+      <td class="px-5 py-3.5 text-zinc-200 max-w-[200px] truncate">${escapeHtml(a.query)}</td>
+      <td class="px-5 py-3.5">
+        <span class="${sponsorColor(a.winner)} font-medium">${sponsorName(a.winner)}</span>
+      </td>
+      <td class="px-5 py-3.5 text-right font-mono text-bido-green font-medium">$${formatUSDC(a.winningBid)}</td>
+      <td class="px-5 py-3.5 text-right text-zinc-500 text-xs">${a.createdAt > 0 ? timeAgo(a.createdAt) : '—'}</td>
+      <td class="px-5 py-3.5 text-right">
+        <a href="${EXPLORER}/address/${BIDO_ADDRESS}" target="_blank" class="text-bido-purple hover:text-bido-blue text-xs font-mono hover:underline">view</a>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ===== RENDER LEADERBOARD =====
+function renderLeaderboard(auctions) {
+  const lb = document.getElementById('leaderboard');
+  const stats = {};
+
+  for (const a of auctions) {
+    const key = a.winner.toLowerCase();
+    if (!stats[key]) stats[key] = { wins: 0, spent: 0n, addr: a.winner };
+    stats[key].wins++;
+    stats[key].spent += a.winningBid;
+  }
+
+  const sorted = Object.values(stats).sort((a, b) => b.wins - a.wins);
+
+  if (sorted.length === 0) {
+    lb.innerHTML = '<div class="col-span-2 text-center text-zinc-600 py-8">No data yet</div>';
+    return;
+  }
+
+  lb.innerHTML = sorted.map((s, i) => {
+    const name = sponsorName(s.addr);
+    const color = sponsorColor(s.addr);
+    const icon = SPONSOR_ICONS[s.addr.toLowerCase()] || '';
+    const spent = formatUSDC(s.spent);
+    const medal = i === 0 ? '<span class="text-arc-gold text-lg">&#9733;</span>' : '';
+
+    return `
+      <div class="gradient-border rounded-2xl p-6 card-hover flex items-center gap-5">
+        <div class="flex-shrink-0">${icon}</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="${color} font-bold text-lg">${name}</span>
+            ${medal}
+          </div>
+          <div class="text-zinc-500 text-xs font-mono mt-0.5">${truncAddr(s.addr)}</div>
+        </div>
+        <div class="text-right flex-shrink-0">
+          <div class="text-2xl font-bold text-white">${s.wins}</div>
+          <div class="text-xs text-zinc-500">wins</div>
+          <div class="text-sm text-bido-green font-medium mt-1">$${spent}</div>
+          <div class="text-xs text-zinc-500">total spent</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ===== LIVE DEMO =====
+let demoRunning = false;
+
+async function triggerDemo() {
+  if (demoRunning) return;
+  demoRunning = true;
+
+  const btn = document.getElementById('demo-btn');
+  const progress = document.getElementById('demo-progress');
+  const result = document.getElementById('demo-result');
+
+  btn.disabled = true;
+  btn.textContent = 'Auction in progress...';
+  progress.classList.remove('hidden');
+  result.classList.add('hidden');
+
+  // Reset steps
+  for (let i = 1; i <= 4; i++) {
+    const step = document.getElementById(`step-${i}`);
+    step.classList.remove('active', 'done');
+    step.querySelector('.step-icon').innerHTML = i;
+  }
+
+  function activateStep(n) {
+    const step = document.getElementById(`step-${n}`);
+    step.classList.add('active');
+    step.querySelector('.step-icon').innerHTML = '<div class="spinner"></div>';
+  }
+
+  function completeStep(n) {
+    const step = document.getElementById(`step-${n}`);
+    step.classList.remove('active');
+    step.classList.add('done');
+    step.querySelector('.step-icon').innerHTML = '&#10003;';
+  }
+
+  // Animate steps
+  activateStep(1);
+  await sleep(500);
+
+  try {
+    // Fire request
+    activateStep(1);
+    const res = await fetch(`${API_URL}/pay-via-bido`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: 'Find me the cheapest flight from LAX to NYC',
+        from: 'LAX',
+        to: 'NYC'
+      })
+    });
+
+    completeStep(1);
+    activateStep(2);
+    await sleep(600);
+    completeStep(2);
+    activateStep(3);
+    await sleep(400);
+
+    const data = await res.json();
+    completeStep(3);
+    activateStep(4);
+    await sleep(300);
+    completeStep(4);
+
+    if (data.bido_receipt) {
+      const r = data.bido_receipt;
+      document.getElementById('demo-winner-text').innerHTML =
+        `<span class="text-bido-green">${r.winner}</span> won Auction #${r.auctionId} with <span class="text-white font-bold">$${r.winningBid} USDC</span>`;
+
+      const txLinks = document.getElementById('demo-tx-links');
+      txLinks.innerHTML = `
+        <div class="flex justify-between py-1.5 border-b border-zinc-800/50">
+          <span class="text-zinc-400">Open Auction</span>
+          <a href="${EXPLORER}/tx/${r.txHashes.open}" target="_blank" class="text-bido-purple hover:underline font-mono text-xs">${r.txHashes.open.slice(0,16)}...</a>
+        </div>
+        <div class="flex justify-between py-1.5 border-b border-zinc-800/50">
+          <span class="text-zinc-400">Close & Pay</span>
+          <a href="${EXPLORER}/tx/${r.txHashes.close}" target="_blank" class="text-bido-purple hover:underline font-mono text-xs">${r.txHashes.close.slice(0,16)}...</a>
+        </div>
+        <div class="flex justify-between py-1.5 border-b border-zinc-800/50">
+          <span class="text-zinc-400">API Payment (95%)</span>
+          <span class="text-bido-green font-mono">$${r.apiPayment}</span>
+        </div>
+        <div class="flex justify-between py-1.5">
+          <span class="text-zinc-400">Platform Fee (5%)</span>
+          <span class="text-arc-gold font-mono">$${r.platformFee}</span>
+        </div>
+      `;
+      result.classList.remove('hidden');
+    }
+
+    // Refresh data
+    setTimeout(refreshData, 2000);
+
+  } catch (err) {
+    console.error('Demo error:', err);
+    for (let i = 1; i <= 4; i++) {
+      const step = document.getElementById(`step-${i}`);
+      step.classList.remove('active');
+    }
+    document.getElementById('demo-winner-text').textContent = 'Error: Is x402-server.js running on localhost:3000?';
+    result.classList.remove('hidden');
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Trigger Live Auction';
+  demoRunning = false;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ===== MAIN LOOP =====
+async function refreshData() {
+  const auctions = await fetchAllAuctions();
+  renderStats(auctions);
+  renderFeed(auctions);
+  renderLeaderboard(auctions);
+}
+
+async function init() {
+  initProvider();
+  await refreshData();
+  setInterval(refreshData, 5000);
+}
+
+init();
+</script>
+</body>
+</html>
