@@ -1,12 +1,10 @@
 // x402-server.js
-// HTTP API server with x402 payment flow + Bido auction integration
-
 require('dotenv').config();
 const express = require('express');
 const { ethers } = require('ethers');
+const { initiateDeveloperControlledWalletsClient } = require('@circle-fin/developer-controlled-wallets');
 const { getFlights, getAvailableRoutes } = require('./flights-api');
 
-// ========== CONFIG ==========
 const PORT = 3000;
 const RPC_URL = process.env.ARC_RPC_URL;
 const BIDO_AUCTION_ADDRESS = process.env.BIDO_AUCTION_ADDRESS;
@@ -21,25 +19,30 @@ const BIDO_ABI = [
 ];
 
 const USDC_ABI = [
-  "function balanceOf(address account) external view returns (uint256)"
+  "function balanceOf(address account) external view returns (uint256)",
+  "function approve(address spender, uint256 amount) external returns (bool)",
+  "function allowance(address owner, address spender) external view returns (uint256)"
 ];
 
-// ========== SETUP ==========
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-// Platform wallet (controls auctions)
 const platformWallet = new ethers.Wallet(process.env.PLATFORM_PRIVATE_KEY, provider);
 const bidoPlatform = new ethers.Contract(BIDO_AUCTION_ADDRESS, BIDO_ABI, platformWallet);
 
-// Sponsor bots (Delta and United, simulated)
 const sponsorAWallet = new ethers.Wallet(process.env.SPONSOR_A_PRIVATE_KEY, provider);
 const sponsorBWallet = new ethers.Wallet(process.env.SPONSOR_B_PRIVATE_KEY, provider);
 const bidoSponsorA = new ethers.Contract(BIDO_AUCTION_ADDRESS, BIDO_ABI, sponsorAWallet);
 const bidoSponsorB = new ethers.Contract(BIDO_AUCTION_ADDRESS, BIDO_ABI, sponsorBWallet);
 
+const circleClient = initiateDeveloperControlledWalletsClient({
+  apiKey: process.env.CIRCLE_API_KEY,
+  entitySecret: process.env.CIRCLE_ENTITY_SECRET,
+});
+const JETBLUE_WALLET_ID = process.env.JETBLUE_WALLET_ID;
+const JETBLUE_ADDRESS = process.env.JETBLUE_ADDRESS;
+
 const usdcContract = new ethers.Contract(USDC_ADDRESS, USDC_ABI, provider);
 
-// ========== HELPERS ==========
 function formatUSDC(amount) {
   return ethers.formatUnits(amount, 6);
 }
@@ -48,75 +51,142 @@ function parseUSDC(amount) {
   return ethers.parseUnits(amount.toString(), 6);
 }
 
-// Sponsor profiles — what each one represents
 const SPONSORS = {
-  A: { name: "Delta Airlines",  wallet: sponsorAWallet, contract: bidoSponsorA, minBid: 2.0, maxBid: 4.0 },
-  B: { name: "United Airlines", wallet: sponsorBWallet, contract: bidoSponsorB, minBid: 2.5, maxBid: 4.5 }
+  A: { 
+    name: "Delta Airlines",  
+    type: "metamask",
+    address: sponsorAWallet.address,
+    wallet: sponsorAWallet, 
+    contract: bidoSponsorA, 
+    minBid: 2.0, 
+    maxBid: 4.0 
+  },
+  B: { 
+    name: "United Airlines", 
+    type: "metamask",
+    address: sponsorBWallet.address,
+    wallet: sponsorBWallet, 
+    contract: bidoSponsorB, 
+    minBid: 2.5, 
+    maxBid: 4.5 
+  },
+  C: { 
+    name: "JetBlue Airways",
+    type: "circle-wallet",
+    address: JETBLUE_ADDRESS,
+    walletId: JETBLUE_WALLET_ID,
+    minBid: 2.8, 
+    maxBid: 4.8 
+  }
 };
 
-// Simulates an autonomous sponsor bot deciding their bid
 function decideBid(sponsorKey, query) {
   const s = SPONSORS[sponsorKey];
-  // Bots get more aggressive on flight queries (their domain)
   const domainMatch = /flight|airline|fly/i.test(query);
   const aggressiveness = domainMatch ? 1.0 : 0.6;
   const bidValue = s.minBid + Math.random() * (s.maxBid - s.minBid) * aggressiveness;
   return parseFloat(bidValue.toFixed(2));
 }
 
-// ========== BIDO ORCHESTRATION ==========
-async function runBidoAuctionForQuery(query) {
-  console.log(`\n[BIDO] 🎯 New auction request: "${query}"`);
+async function waitForCircleTransaction(transactionId, maxAttempts = 30) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const res = await circleClient.getTransaction({ id: transactionId });
+    const tx = res.data?.transaction;
+    if (!tx) continue;
+    if (tx.state === "CONFIRMED" || tx.state === "COMPLETE") {
+      return tx;
+    }
+    if (tx.state === "FAILED" || tx.state === "DENIED") {
+      throw new Error(`Circle tx ${tx.state}: ${tx.errorReason || 'unknown'}`);
+    }
+  }
+  throw new Error("Circle transaction timeout");
+}
 
-  // 1. Open auction
-  console.log(`[BIDO]   → Opening auction on Arc...`);
+async function jetbluePlaceBid(auctionId, amount) {
+  const res = await circleClient.createContractExecutionTransaction({
+    walletId: JETBLUE_WALLET_ID,
+    contractAddress: BIDO_AUCTION_ADDRESS,
+    abiFunctionSignature: "placeBid(uint256,uint256)",
+    abiParameters: [auctionId.toString(), amount.toString()],
+    fee: { type: "level", config: { feeLevel: "MEDIUM" } }
+  });
+  const tx = await waitForCircleTransaction(res.data.id);
+  return tx;
+}
+
+async function placeBidForSponsor(sponsorKey, auctionId, bidAmount) {
+  const s = SPONSORS[sponsorKey];
+  const amountWei = parseUSDC(bidAmount);
+  if (s.type === "metamask") {
+    const tx = await s.contract.placeBid(auctionId, amountWei);
+    await tx.wait();
+    return { hash: tx.hash, type: "metamask" };
+  } else if (s.type === "circle-wallet") {
+    const tx = await jetbluePlaceBid(auctionId, amountWei);
+    return { hash: tx.txHash, type: "circle-wallet" };
+  }
+}
+
+async function runBidoAuctionForQuery(query) {
+  console.log(`\n[BIDO] New auction: "${query}"`);
+
+  console.log(`[BIDO]   -> Opening auction on Arc...`);
   const openTx = await bidoPlatform.openAuction(query);
   await openTx.wait();
   const auctionId = (await bidoPlatform.auctionCounter()) - 1n;
-  console.log(`[BIDO]   ✓ Auction #${auctionId} opened (tx: ${openTx.hash.slice(0,12)}...)`);
+  console.log(`[BIDO]   OK Auction #${auctionId} opened (tx: ${openTx.hash.slice(0,12)}...)`);
 
-  // 2. Sponsors compete (bots decide their bids)
   const bidA = decideBid("A", query);
   const bidB = decideBid("B", query);
-  console.log(`[BIDO]   → ${SPONSORS.A.name} bot bidding $${bidA}...`);
-  console.log(`[BIDO]   → ${SPONSORS.B.name} bot bidding $${bidB}...`);
+  const bidC = decideBid("C", query);
 
-  // Place bids in order so the higher one wins
+  console.log(`[BIDO]   -> ${SPONSORS.A.name} bidding $${bidA} (MetaMask)`);
+  console.log(`[BIDO]   -> ${SPONSORS.B.name} bidding $${bidB} (MetaMask)`);
+  console.log(`[BIDO]   -> ${SPONSORS.C.name} bidding $${bidC} (Circle Wallet)`);
+
   const sortedBids = [
     { sponsor: "A", amount: bidA },
-    { sponsor: "B", amount: bidB }
-  ].sort((x, y) => x.amount - y.amount); // ascending order
+    { sponsor: "B", amount: bidB },
+    { sponsor: "C", amount: bidC }
+  ].sort((x, y) => x.amount - y.amount);
 
   for (const bid of sortedBids) {
     try {
-      const tx = await SPONSORS[bid.sponsor].contract.placeBid(auctionId, parseUSDC(bid.amount));
-      await tx.wait();
-      console.log(`[BIDO]   ✓ ${SPONSORS[bid.sponsor].name} bid $${bid.amount} placed (tx: ${tx.hash.slice(0,12)}...)`);
+      const result = await placeBidForSponsor(bid.sponsor, auctionId, bid.amount);
+      const sponsorName = SPONSORS[bid.sponsor].name;
+      const hashShort = (result.hash || 'pending').slice(0, 12);
+      console.log(`[BIDO]   OK ${sponsorName} bid $${bid.amount} (${result.type}, tx: ${hashShort}...)`);
     } catch (err) {
-      console.log(`[BIDO]   ✗ ${SPONSORS[bid.sponsor].name} bid failed: ${err.shortMessage || err.message}`);
+      const sponsorName = SPONSORS[bid.sponsor].name;
+      console.log(`[BIDO]   X  ${sponsorName} bid failed: ${err.shortMessage || err.message}`);
     }
   }
 
-  // 3. Close auction (winner pays)
-  console.log(`[BIDO]   → Closing auction (winner pays)...`);
+  console.log(`[BIDO]   -> Closing auction (winner pays)...`);
   const closeTx = await bidoPlatform.closeAuction(auctionId);
   await closeTx.wait();
 
-  // 4. Get final state
   const auction = await bidoPlatform.getAuction(auctionId);
   const winnerAddress = auction.highestBidder;
   const winnerAmount = formatUSDC(auction.highestBid);
   
-  // Identify winner
   let winnerName = "Unknown";
-  if (winnerAddress.toLowerCase() === sponsorAWallet.address.toLowerCase()) winnerName = SPONSORS.A.name;
-  if (winnerAddress.toLowerCase() === sponsorBWallet.address.toLowerCase()) winnerName = SPONSORS.B.name;
+  let winnerType = "unknown";
+  for (const key of Object.keys(SPONSORS)) {
+    if (SPONSORS[key].address.toLowerCase() === winnerAddress.toLowerCase()) {
+      winnerName = SPONSORS[key].name;
+      winnerType = SPONSORS[key].type;
+    }
+  }
 
-  console.log(`[BIDO]   🏆 ${winnerName} won with $${winnerAmount} (tx: ${closeTx.hash.slice(0,12)}...)`);
+  console.log(`[BIDO]   WINNER: ${winnerName} won with $${winnerAmount} (${winnerType}, tx: ${closeTx.hash.slice(0,12)}...)`);
 
   return {
     auctionId: auctionId.toString(),
     winner: winnerName,
+    winnerType: winnerType,
     winningBid: winnerAmount,
     apiPayment: (parseFloat(winnerAmount) * 0.95).toFixed(4),
     platformFee: (parseFloat(winnerAmount) * 0.05).toFixed(4),
@@ -127,36 +197,27 @@ async function runBidoAuctionForQuery(query) {
   };
 }
 
-// ========== EXPRESS SERVER ==========
 const app = express();
 app.use(express.json());
-
-// CORS — allow dashboard requests
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
-// Logger middleware
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.path}`);
   next();
 });
 
-// Endpoint 1: GET /flights — returns 402 Payment Required (x402 spec)
 app.get('/flights', (req, res) => {
   const { from, to } = req.query;
-
   if (!from || !to) {
     return res.status(400).json({ error: "Missing 'from' or 'to' query params" });
   }
-
-  console.log(`[x402] 💸 Returning 402 Payment Required for /flights?from=${from}&to=${to}`);
-
-  // x402: Payment Required
+  console.log(`[x402] Returning 402 Payment Required for /flights?from=${from}&to=${to}`);
   res.status(402).json({
     status: 402,
     error: "Payment Required",
@@ -171,81 +232,82 @@ app.get('/flights', (req, res) => {
   });
 });
 
-// Endpoint 2: POST /pay-via-bido — orchestrates auction and returns the data
 app.post('/pay-via-bido', async (req, res) => {
   const { query, from, to } = req.body;
-
   if (!from || !to) {
     return res.status(400).json({ error: "Missing 'from' or 'to' in body" });
   }
-
   const intentQuery = query || `flight from ${from} to ${to}`;
-
   try {
-    // 1. Run Bido auction (4 on-chain txs)
     const auctionResult = await runBidoAuctionForQuery(intentQuery);
-
-    // 2. Verify payment was successful (highestBid > 0 and auction closed)
     if (parseFloat(auctionResult.winningBid) <= 0) {
-      return res.status(500).json({ error: "Auction failed — no valid bids" });
+      return res.status(500).json({ error: "Auction failed - no valid bids" });
     }
-
-    // 3. Fetch flight data (now that payment is settled)
     const flights = getFlights(from, to);
-
     if (flights.length === 0) {
       return res.status(404).json({
-        error: `No flights available for ${from}→${to}`,
+        error: `No flights available for ${from} to ${to}`,
         available_routes: getAvailableRoutes()
       });
     }
-
-    // 4. Return data + receipt
     res.status(200).json({
       status: 200,
       message: "Payment confirmed via Bido. Data delivered.",
       bido_receipt: auctionResult,
-      data: {
-        route: `${from}→${to}`,
-        flights: flights
-      }
+      data: { route: `${from}-${to}`, flights: flights }
     });
-
   } catch (err) {
     console.error(`[ERROR] Auction failed:`, err.message);
     res.status(500).json({ error: "Auction failed", details: err.message });
   }
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.json({
     service: "Bido x402 API",
     status: "running",
-    endpoints: ["/flights?from=X&to=Y (returns 402)", "POST /pay-via-bido"],
     contract: BIDO_AUCTION_ADDRESS,
-    network: "Arc Testnet"
+    network: "Arc Testnet",
+    sponsors: 3
   });
 });
 
-// ========== START ==========
+app.get('/sponsors', (req, res) => {
+  res.json({
+    sponsors: Object.keys(SPONSORS).map(key => ({
+      key,
+      name: SPONSORS[key].name,
+      type: SPONSORS[key].type,
+      address: SPONSORS[key].address,
+      onboarding: SPONSORS[key].type === "metamask" 
+        ? "MetaMask wallet (BYOW)" 
+        : "Circle Wallets API (email-based onboarding)"
+    }))
+  });
+});
+
 app.listen(PORT, async () => {
-  console.log("╔════════════════════════════════════════════════╗");
-  console.log("║       BIDO x402 SERVER — Arc Testnet           ║");
-  console.log("╚════════════════════════════════════════════════╝");
+  console.log("====================================================");
+  console.log("       BIDO x402 SERVER - Arc Testnet");
+  console.log("   3 Sponsors: 2 MetaMask + 1 Circle Wallet");
+  console.log("====================================================");
   console.log(`Listening on http://localhost:${PORT}`);
   console.log(`Contract: ${BIDO_AUCTION_ADDRESS}`);
   console.log(`Platform: ${platformWallet.address}`);
-  console.log(`Sponsor A (${SPONSORS.A.name}): ${sponsorAWallet.address}`);
-  console.log(`Sponsor B (${SPONSORS.B.name}): ${sponsorBWallet.address}`);
+  console.log(`\nSPONSORS:`);
+  console.log(`  ${SPONSORS.A.name.padEnd(20)} ${SPONSORS.A.address}  (${SPONSORS.A.type})`);
+  console.log(`  ${SPONSORS.B.name.padEnd(20)} ${SPONSORS.B.address}  (${SPONSORS.B.type})`);
+  console.log(`  ${SPONSORS.C.name.padEnd(20)} ${SPONSORS.C.address}  (${SPONSORS.C.type})`);
 
-  // Show balances
   const balPlatform = await usdcContract.balanceOf(platformWallet.address);
   const balA = await usdcContract.balanceOf(sponsorAWallet.address);
   const balB = await usdcContract.balanceOf(sponsorBWallet.address);
+  const balC = await usdcContract.balanceOf(JETBLUE_ADDRESS);
   console.log(`\nBalances:`);
-  console.log(`  Platform:  ${formatUSDC(balPlatform)} USDC`);
-  console.log(`  ${SPONSORS.A.name}:    ${formatUSDC(balA)} USDC`);
+  console.log(`  Platform:        ${formatUSDC(balPlatform)} USDC`);
+  console.log(`  ${SPONSORS.A.name}:  ${formatUSDC(balA)} USDC`);
   console.log(`  ${SPONSORS.B.name}: ${formatUSDC(balB)} USDC`);
-  console.log(`\n✓ Server ready. Run agent.js to test.\n`);
+  console.log(`  ${SPONSORS.C.name}: ${formatUSDC(balC)} USDC  <- Circle Wallet`);
+
+  console.log(`\nServer ready. Run agent.js to test.\n`);
 });
